@@ -1,0 +1,115 @@
+# apps/applications/models.py
+import uuid
+from django.db import models
+from django.conf import settings
+from django.utils.translation import gettext_lazy as _
+
+def generate_tracking_code():
+    """Generates a unique tracking code like 'ISA-2024-ABC12'."""
+    from django.utils import timezone
+    code = str(uuid.uuid4().hex[:5]).upper()
+    year = timezone.now().year
+    return f"ISA-{year}-{code}"
+
+class Application(models.Model):
+    class StatusChoices(models.TextChoices):
+        PENDING_REVIEW = 'PENDING_REVIEW', _('Pending Review')
+        PENDING_CORRECTION = 'PENDING_CORRECTION', _('Pending Correction by Applicant')
+        APPROVED = 'APPROVED', _('Approved')
+        REJECTED = 'REJECTED', _('Rejected')
+
+    class ApplicationType(models.TextChoices):
+        NEW_ADMISSION = 'NEW_ADMISSION', _('New Admission')
+        VISA_EXTENSION = 'VISA_EXTENSION', _('Visa Extension')
+        INTERNAL_EXIT_PERMIT = 'INTERNAL_EXIT_PERMIT', _('Internal Exit Permit')
+        FINAL_EXIT_PERMIT = 'FINAL_EXIT_PERMIT', _('Final Exit Permit')
+        TRANSFER_REQUEST = 'TRANSFER_REQUEST', _('Transfer Request')
+
+    applicant = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="applications")
+    tracking_code = models.CharField(max_length=20, unique=True, editable=False, default=generate_tracking_code)
+    status = models.CharField(max_length=50, choices=StatusChoices.choices, default=StatusChoices.PENDING_REVIEW)
+    application_type = models.CharField(
+        _("Application Type"), max_length=50, choices=ApplicationType.choices, default=ApplicationType.NEW_ADMISSION
+    )
+    form_data = models.JSONField(_("Form Data"), default=dict, blank=True)
+    submitted_by_institution = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="submitted_applications",
+        limit_choices_to={'roles__name': 'Recruitment Institution'},
+        help_text=_("The institution user that submitted this application.")
+    )
+
+    # Fields for New Admission type (can be null for other types)
+    full_name = models.CharField(_("Full Name"), max_length=255, blank=True)
+    date_of_birth = models.DateField(_("Date of Birth"), null=True, blank=True)
+    country_of_residence = models.CharField(_("Country of Residence"), max_length=100, blank=True)
+    father_name = models.CharField(_("Father's Name"), max_length=255, blank=True)
+    grandfather_name = models.CharField(_("Grandfather's Name"), max_length=255, blank=True, null=True)
+    email = models.EmailField(_("Email"), blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Application {self.tracking_code} ({self.get_application_type_display()})"
+
+class AcademicHistory(models.Model):
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="academic_histories")
+    degree_level = models.CharField(_("Degree Level"), max_length=100)
+    country = models.CharField(_("Country of Study"), max_length=100)
+    university_name = models.CharField(_("University Name"), max_length=255)
+    field_of_study = models.CharField(_("Field of Study"), max_length=255)
+    gpa = models.DecimalField(_("GPA"), max_digits=4, decimal_places=2)
+    certificate_file = models.FileField(_("Certificate File"), upload_to='academic_certs/', blank=True, null=True)
+
+class UniversityChoice(models.Model):
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="university_choices")
+    university = models.ForeignKey("core.University", on_delete=models.PROTECT, verbose_name=_("University"))
+    program = models.ForeignKey("core.Program", on_delete=models.PROTECT, verbose_name=_("Program"))
+    priority = models.PositiveSmallIntegerField(_("Priority"))
+    class Meta:
+        ordering = ['priority']
+        unique_together = ('application', 'priority')
+
+class ApplicationDocument(models.Model):
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="documents")
+    document_type = models.CharField(_("Document Type"), max_length=100)
+    file = models.FileField(_("File"), upload_to='application_docs/')
+
+class ApplicationLog(models.Model):
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="logs")
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True)
+    action = models.CharField(_("Action"), max_length=255)
+    comment = models.TextField(_("Comment"), blank=True, null=True)
+    timestamp = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        ordering = ['-timestamp']
+
+class ApplicationTask(models.Model):
+    class StatusChoices(models.TextChoices):
+        UNCLAIMED = 'UNCLAIMED', _('Unclaimed')
+        ASSIGNED = 'ASSIGNED', _('Assigned')
+        COMPLETED = 'COMPLETED', _('Completed')
+    class DecisionChoices(models.TextChoices):
+        PENDING = 'PENDING', _('Pending')
+        APPROVED = 'APPROVED', _('Approved')
+        REJECTED = 'REJECTED', _('Rejected')
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="tasks")
+    university = models.ForeignKey("core.University", on_delete=models.CASCADE)
+    assigned_expert = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="tasks")
+    status = models.CharField(max_length=20, choices=StatusChoices.choices, default=StatusChoices.UNCLAIMED)
+    decision = models.CharField(max_length=20, choices=DecisionChoices.choices, default=DecisionChoices.PENDING)
+
+class InternalNote(models.Model):
+    application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name="internal_notes")
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True)
+    message = models.TextField(_("Message"))
+    timestamp = models.DateTimeField(auto_now_add=True)
+    class Meta:
+        verbose_name = _("Internal Note")
+        verbose_name_plural = _("Internal Notes")
+        ordering = ['-timestamp']

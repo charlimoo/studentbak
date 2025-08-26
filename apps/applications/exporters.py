@@ -1,0 +1,113 @@
+# apps/applications/exporters.py
+from io import BytesIO
+from django.http import HttpResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, Border, Side
+from reportlab.lib.pagesizes import letter, landscape
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
+import openpyxl
+
+def generate_excel_response(queryset):
+    """
+    Generates an XLSX file from a queryset of Application objects
+    and returns it as a downloadable HttpResponse.
+    """
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Applications"
+
+    # Define headers and apply styles
+    headers = [
+        "Tracking Code", "Applicant Name", "Applicant Email", "Application Type",
+        "Status", "Submission Date"
+    ]
+    sheet.append(headers)
+    
+    header_font = Font(bold=True, color="FFFFFF")
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    
+    for cell in sheet[1]:
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.fill = openpyxl.styles.PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+
+    # Add data rows
+    for app in queryset:
+        row = [
+            app.tracking_code,
+            app.full_name or app.applicant.full_name, # Fallback to user's name
+            app.email or app.applicant.email,
+            app.get_application_type_display(),
+            app.get_status_display(),
+            app.created_at.strftime("%Y-%m-%d %H:%M"),
+        ]
+        sheet.append(row)
+
+    # Auto-size columns for better readability
+    for column_cells in sheet.columns:
+        length = max(len(str(cell.value)) for cell in column_cells)
+        sheet.column_dimensions[column_cells[0].column_letter].width = length + 2
+
+    # Save to a virtual file in memory
+    virtual_workbook = BytesIO()
+    workbook.save(virtual_workbook)
+    virtual_workbook.seek(0)
+    
+    response = HttpResponse(
+        virtual_workbook,
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    response['Content-Disposition'] = 'attachment; filename="applications_export.xlsx"'
+    return response
+
+def generate_pdf_response(queryset):
+    """
+    Generates a PDF file from a queryset of Application objects
+    and returns it as a downloadable HttpResponse.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(letter))
+    elements = []
+    styles = getSampleStyleSheet()
+    
+    # Title
+    title = Paragraph("Application Export Report", styles['h1'])
+    elements.append(title)
+    
+    # Prepare data for the table
+    data = [
+        ["Tracking Code", "Applicant Name", "Applicant Email", "Application Type", "Status", "Submission Date"]
+    ]
+    for app in queryset:
+        data.append([
+            app.tracking_code,
+            app.full_name or app.applicant.full_name,
+            app.email or app.applicant.email,
+            app.get_application_type_display(),
+            app.get_status_display(),
+            app.created_at.strftime("%Y-%m-%d"),
+        ])
+        
+    # Create and style the table
+    table = Table(data, colWidths=[100, 120, 150, 120, 100, 80])
+    style = TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4F81BD')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+    ])
+    table.setStyle(style)
+    
+    elements.append(table)
+    doc.build(elements)
+    
+    buffer.seek(0)
+    response = HttpResponse(buffer, content_type='application/pdf')
+    response['Content-Disposition'] = 'attachment; filename="applications_export.pdf"'
+    return response

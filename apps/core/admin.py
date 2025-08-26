@@ -1,0 +1,32 @@
+# apps/core/admin.py
+from django.contrib import admin
+from .models import University, Program
+
+class ProgramInline(admin.TabularInline):
+    """
+    Allows editing Program models directly within the University admin page.
+    This is more user-friendly than managing them separately.
+    """
+    model = Program
+    extra = 1 # Show one extra empty form for adding a new program
+    search_fields = ('name',)
+
+@admin.register(University)
+class UniversityAdmin(admin.ModelAdmin):
+    """
+    Admin view for the University model.
+    """
+    list_display = ('name',)
+    search_fields = ('name',)
+    inlines = [ProgramInline]
+
+@admin.register(Program)
+class ProgramAdmin(admin.ModelAdmin):
+    """
+    Admin view for the Program model.
+    This provides a separate interface for managing all programs at once.
+    """
+    list_display = ('name', 'university')
+    list_filter = ('university',)
+    search_fields = ('name', 'university__name')
+    autocomplete_fields = ('university',) # Improves UI for selecting a university

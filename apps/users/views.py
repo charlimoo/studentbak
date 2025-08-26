@@ -1,0 +1,161 @@
+# start of apps/users/views.py
+# apps/users/views.py
+from django.contrib.auth import get_user_model
+from django.shortcuts import get_object_or_404
+from rest_framework import viewsets, permissions, status, generics
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.parsers import MultiPartParser, FormParser
+from rest_framework_simplejwt.tokens import RefreshToken
+from impersonate.views import impersonate as start_impersonate_session, stop_impersonate as stop_impersonate_session
+
+from .models import User, Role, Permission, UserNotificationSettings, PasswordResetToken
+from .serializers import (
+    UserSerializer, UserAdminSerializer, RoleSerializer, PermissionSerializer,
+    UserRegistrationSerializer, InstitutionRegistrationSerializer, UserProfileSerializer,
+    ChangePasswordSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+    UserNotificationSettingsSerializer
+)
+from .permissions import IsHeadOfOrganization, HasPermission
+from .filters import UserFilter
+from .tasks import send_password_reset_email_task
+
+# --- Public & General User Views ---
+class UserRegistrationView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    permission_classes = [permissions.AllowAny]
+    serializer_class = UserRegistrationSerializer
+
+class InstitutionRegistrationView(generics.CreateAPIView):
+    queryset = User.objects.all()
+    serializer_class = InstitutionRegistrationSerializer
+    permission_classes = [permissions.AllowAny]
+    parser_classes = [MultiPartParser, FormParser]
+
+class UserMeView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    def get(self, request, *args, **kwargs):
+        return Response(UserSerializer(request.user).data)
+
+# --- Password Reset Flow ---
+class PasswordResetRequestView(generics.GenericAPIView):
+    serializer_class = PasswordResetRequestSerializer
+    permission_classes = [permissions.AllowAny]
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            user = User.objects.get(email__iexact=serializer.validated_data['email'])
+            PasswordResetToken.objects.filter(user=user).delete()
+            reset_token = PasswordResetToken.objects.create(user=user)
+            send_password_reset_email_task.delay(user.id, str(reset_token.token))
+        except User.DoesNotExist: pass
+        return Response({"detail": "If an account with that email exists, a password reset link has been sent."}, status=status.HTTP_200_OK)
+
+class PasswordResetConfirmView(generics.GenericAPIView):
+    serializer_class = PasswordResetConfirmSerializer
+    permission_classes = [permissions.AllowAny]
+    def post(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            reset_token = PasswordResetToken.objects.select_related('user').get(token=serializer.validated_data['token'])
+        except (PasswordResetToken.DoesNotExist, ValueError):
+            return Response({"token": ["Invalid or expired token."]}, status=status.HTTP_400_BAD_REQUEST)
+        if reset_token.is_expired():
+            reset_token.delete()
+            return Response({"token": ["Invalid or expired token."]}, status=status.HTTP_400_BAD_REQUEST)
+        user = reset_token.user
+        user.set_password(serializer.validated_data['new_password'])
+        user.save()
+        reset_token.delete()
+        return Response({"detail": "Password has been reset successfully."}, status=status.HTTP_200_OK)
+
+# --- Self-Service Profile Management Views ---
+class UserProfileView(generics.RetrieveUpdateAPIView):
+    queryset = User.objects.all()
+    serializer_class = UserProfileSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_object(self):
+        return self.request.user
+
+class ChangePasswordView(generics.UpdateAPIView):
+    serializer_class = ChangePasswordSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_object(self):
+        return self.request.user
+    def update(self, request, *args, **kwargs):
+        self.object = self.get_object()
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        if not self.object.check_password(serializer.data.get("old_password")):
+            return Response({"old_password": ["Wrong password."]}, status=status.HTTP_400_BAD_REQUEST)
+        self.object.set_password(serializer.data.get("new_password"))
+        self.object.save()
+        return Response({"detail": "Password updated successfully."}, status=status.HTTP_200_OK)
+
+class UserNotificationSettingsView(generics.RetrieveUpdateAPIView):
+    serializer_class = UserNotificationSettingsSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_object(self):
+        settings, _ = UserNotificationSettings.objects.get_or_create(user=self.request.user)
+        return settings
+
+# --- Admin & Management Views ---
+class UserViewSet(viewsets.ModelViewSet):
+    queryset = User.objects.prefetch_related('roles', 'universities', 'organization_unit').order_by('id')
+    serializer_class = UserAdminSerializer
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'manage_users'
+    filterset_class = UserFilter
+    ordering_fields = ['full_name', 'email', 'date_joined']
+
+class RoleViewSet(viewsets.ModelViewSet):
+    queryset = Role.objects.prefetch_related('permissions').all()
+    serializer_class = RoleSerializer
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'manage_roles'
+
+class PermissionListView(generics.ListAPIView):
+    queryset = Permission.objects.all()
+    serializer_class = PermissionSerializer
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'manage_roles'
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        data = {}
+        for permission in queryset:
+            data.setdefault(permission.group, []).append(self.get_serializer(permission).data)
+        return Response(data)
+
+# --- Impersonation Views ---
+class ImpersonateStartView(APIView):
+    permission_classes = [IsHeadOfOrganization]
+    def post(self, request, user_id):
+        target_user = get_object_or_404(get_user_model(), pk=user_id)
+        if target_user.is_superuser:
+            return Response({"detail": "Cannot impersonate a superuser."}, status=status.HTTP_403_FORBIDDEN)
+        
+        # This function from the library sets the session correctly
+        start_impersonate_session(request, target_user)
+        
+        # Generate a new JWT for the impersonated user
+        refresh = RefreshToken.for_user(target_user)
+        
+        return Response({
+            'status': f'Now impersonating {target_user.email}',
+            'impersonated_user': UserSerializer(target_user).data,
+            'refresh': str(refresh),
+            'access': str(refresh.access_token)
+        })
+
+class ImpersonateStopView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    def post(self, request):
+        if not getattr(request.user, 'is_impersonate', False):
+            return Response({"detail": "Not currently impersonating."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # This function from the library restores the original user's session
+        stop_impersonate_session(request)
+        
+        return Response({'status': 'Impersonation stopped.'})

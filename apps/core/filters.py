@@ -1,0 +1,45 @@
+# apps/core/filters.py
+import django_filters
+from django.db.models import Q
+from .models import Permit, Scholarship
+
+class PermitFilter(django_filters.FilterSet):
+    """FilterSet for the Permit model."""
+    search = django_filters.CharFilter(
+        method='filter_search',
+        label="Search by Institution Name or Permit Number"
+    )
+    
+    class Meta:
+        model = Permit
+        fields = {
+            'permit_type': ['exact'],
+            'status': ['exact', 'in'],
+            'issue_date': ['gte', 'lte'],
+            'expiry_date': ['gte', 'lte'],
+        }
+        
+    def filter_search(self, queryset, name, value):
+        return queryset.filter(
+            Q(institution_name__icontains=value) | Q(permit_number__icontains=value)
+        )
+
+class ScholarshipFilter(django_filters.FilterSet):
+    """FilterSet for the Scholarship model."""
+    search = django_filters.CharFilter(
+        method='filter_search',
+        label="Search by Title or Field of Study"
+    )
+    
+    class Meta:
+        model = Scholarship
+        fields = {
+            'university': ['exact'],
+            'application_deadline': ['gte'], # Find scholarships with deadline >= today
+            'is_active': ['exact'],
+        }
+        
+    def filter_search(self, queryset, name, value):
+        return queryset.filter(
+            Q(title__icontains=value) | Q(field_of_study__icontains=value)
+        )

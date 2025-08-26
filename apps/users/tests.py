@@ -1,0 +1,29 @@
+# apps/users/tests.py
+from django.test import TestCase
+
+# Create your tests here.
+# Example test structure:
+#
+# from rest_framework.test import APITestCase
+# from rest_framework import status
+# from django.urls import reverse
+# from .models import User, Role
+#
+# class UserAPITests(APITestCase):
+#
+#     def test_public_user_registration(self):
+#         """
+#         Ensure anyone can register for a new account.
+#         """
+#         url = reverse('user-register')
+#         data = {
+#             "email": "newapplicant@example.com",
+#             "full_name": "New Applicant",
+#             "password": "StrongPassword123!",
+#             "password2": "StrongPassword123!"
+#         }
+#         response = self.client.post(url, data, format='json')
+#         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+#         self.assertTrue(User.objects.filter(email="newapplicant@example.com").exists())
+#         new_user = User.objects.get(email="newapplicant@example.com")
+#         self.assertTrue(new_user.roles.filter(name='Applicant').exists())

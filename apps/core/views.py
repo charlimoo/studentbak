@@ -1,0 +1,209 @@
+# start of apps/core/views.py
+# apps/core/views.py
+from django.db.models import Count, Q
+from django.utils import timezone
+from rest_framework import viewsets, permissions, status
+from rest_framework.views import APIView
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
+
+from .models import (
+    University, Program, OrganizationUnit, NotificationTemplate,
+    SystemList, Permit, Scholarship, Notification
+)
+from .serializers import (
+    UniversitySerializer, ProgramSerializer, OrganizationUnitSerializer,
+    NotificationTemplateSerializer, SystemListSerializer, PermitSerializer,
+    ScholarshipSerializer, NotificationSerializer
+)
+from .filters import PermitFilter, ScholarshipFilter
+from .reports import ReportGenerator 
+from apps.users.permissions import HasPermission
+from apps.applications.models import Application, ApplicationTask
+from apps.support.models import SupportTicket
+from apps.users.models import User
+
+from django.contrib.auth.decorators import user_passes_test
+from django.shortcuts import render
+from django.core.management import call_command
+from django.contrib import messages
+from django.http import HttpResponseRedirect
+from django.urls import reverse
+import io
+
+# --- Existing Views (unchanged) ---
+DOCUMENT_TYPES = [{"value": "مدرک هویتی", "label": "مدرک هویتی"}, {"value": "مدرک شغلی", "label": "مدرک شغلی"}, {"value": "سایر", "label": "سایر"}]
+class UniversityViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = University.objects.all().order_by('name')
+    serializer_class = UniversitySerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class ProgramViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = ProgramSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_queryset(self):
+        university_pk = self.kwargs.get('university_pk')
+        return Program.objects.filter(university__pk=university_pk).order_by('name') if university_pk else Program.objects.none()
+
+class DocumentTypesView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    def get(self, request, *args, **kwargs):
+        return Response(DOCUMENT_TYPES, status=status.HTTP_200_OK)
+
+class OrganizationChartView(ListAPIView):
+    queryset = OrganizationUnit.objects.filter(parent__isnull=True)
+    serializer_class = OrganizationUnitSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+class NotificationTemplateViewSet(viewsets.ModelViewSet):
+    queryset = NotificationTemplate.objects.all()
+    serializer_class = NotificationTemplateSerializer
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'manage_system_settings'
+
+class SystemListNameView(ListAPIView):
+    queryset = SystemList.objects.all().values_list('name', flat=True)
+    permission_classes = [permissions.IsAuthenticated]
+    def get(self, request, *args, **kwargs):
+        return Response(self.get_queryset())
+
+class SystemListDetailView(RetrieveUpdateAPIView):
+    queryset = SystemList.objects.all()
+    serializer_class = SystemListSerializer
+    lookup_field = 'name'
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'manage_system_settings'
+
+class PermitViewSet(viewsets.ModelViewSet):
+    queryset = Permit.objects.all()
+    serializer_class = PermitSerializer
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'manage_permits'
+    filterset_class = PermitFilter
+    ordering_fields = ['institution_name', 'status', 'issue_date', 'expiry_date']
+
+class ScholarshipViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Scholarship.objects.filter(is_active=True).select_related('university')
+    serializer_class = ScholarshipSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filterset_class = ScholarshipFilter
+    ordering_fields = ['application_deadline', 'title']
+
+class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = Notification.objects.all()
+    serializer_class = NotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    def get_queryset(self):
+        return Notification.objects.filter(user=self.request.user)
+    @action(detail=False, methods=['post'], url_path='mark-all-read')
+    def mark_all_read(self, request):
+        self.get_queryset().filter(is_read=False).update(is_read=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    @action(detail=True, methods=['post'], url_path='mark-read')
+    def mark_read(self, request, pk=None):
+        notification = self.get_object()
+        notification.is_read = True
+        notification.save(update_fields=['is_read'])
+        return Response(self.get_serializer(notification).data)
+
+class DashboardStatsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    def get(self, request, *args, **kwargs):
+        user = request.user
+        stats = {}
+        primary_role = user.roles.first().name if user.roles.exists() else None
+        if primary_role == 'Applicant':
+            applicant_apps = Application.objects.filter(applicant=user)
+            stats['my_applications'] = applicant_apps.aggregate(
+                total=Count('id'),
+                pending=Count('id', filter=Q(status__in=['PENDING_REVIEW', 'PENDING_CORRECTION'])),
+                approved=Count('id', filter=Q(status='APPROVED')),
+                rejected=Count('id', filter=Q(status='REJECTED')),
+            )
+            stats['my_tickets'] = SupportTicket.objects.filter(user=user).aggregate(
+                open=Count('id', filter=Q(status='OPEN')),
+                awaiting_reply=Count('id', filter=Q(status='AWAITING_REPLY')),
+            )
+        elif primary_role == 'UniversityExpert':
+            expert_universities = user.universities.all()
+            stats['expert_workbench'] = {
+                'unclaimed_tasks': ApplicationTask.objects.filter(university__in=expert_universities, status='UNCLAIMED').count(),
+                'my_assigned_tasks': ApplicationTask.objects.filter(assigned_expert=user, status='ASSIGNED').count(),
+                'completed_by_me_30d': ApplicationTask.objects.filter(
+                    assigned_expert=user, status='COMPLETED',
+                    application__updated_at__gte=timezone.now() - timezone.timedelta(days=30)
+                ).count(),
+            }
+        elif primary_role == 'Recruitment Institution':
+            institution_universities = user.universities.all()
+            institution_apps = Application.objects.filter(
+                university_choices__university__in=institution_universities
+            ).distinct()
+            stats['institution_dashboard'] = institution_apps.aggregate(
+                total_applicants=Count('id'),
+                pending_review=Count('id', filter=Q(status__in=['PENDING_REVIEW', 'PENDING_CORRECTION'])),
+                approved=Count('id', filter=Q(status='APPROVED')),
+                rejected=Count('id', filter=Q(status='REJECTED')),
+            )
+        elif primary_role == 'HeadOfOrganization':
+            stats['system_overview'] = {
+                'total_applications': Application.objects.count(),
+                'total_users': User.objects.count(),
+                'open_support_tickets': SupportTicket.objects.filter(status__in=['OPEN', 'AWAITING_REPLY']).count(),
+                'active_permits': Permit.objects.filter(status='ACTIVE').count(),
+            }
+        return Response(stats)
+
+
+class ReportsView(APIView):
+    permission_classes = [permissions.IsAuthenticated, HasPermission]
+    required_permission = 'view_reports'
+
+    def get(self, request, *args, **kwargs):
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        time_grouping = request.query_params.get('time_grouping', 'day')
+
+        if time_grouping not in ['day', 'week', 'month']:
+            time_grouping = 'day'
+
+        report_generator = ReportGenerator(start_date, end_date)
+        
+        response_data = {
+            'report_period': {
+                'start_date': report_generator.start_date.isoformat(),
+                'end_date': report_generator.end_date.isoformat(),
+            },
+            'applications_by_type': report_generator.get_applications_by_type(),
+            'applications_over_time': report_generator.get_applications_over_time(group_by=time_grouping),
+            'status_distribution': report_generator.get_status_distribution(),
+            'top_countries': report_generator.get_top_countries(),
+        }
+
+        return Response(response_data)
+    
+@user_passes_test(lambda u: u.is_staff and u.is_superuser)
+def management_actions_view(request):
+    context = {'output': None}
+
+    if request.method == 'POST':
+        output_buffer = io.StringIO()
+
+        if 'populate' in request.POST:
+            try:
+                call_command('populate_db', stdout=output_buffer)
+                messages.success(request, 'Database successfully populated with test data.')
+            except Exception as e:
+                messages.error(request, f'An error occurred during population: {e}')
+        
+        elif 'clean' in request.POST:
+            try:
+                call_command('clean_db', stdout=output_buffer)
+                messages.success(request, 'Test data successfully cleaned from the database.')
+            except Exception as e:
+                messages.error(request, f'An error occurred during cleaning: {e}')
+        
+        context['output'] = output_buffer.getvalue()
+    
+    return render(request, 'admin/management_actions.html', context)

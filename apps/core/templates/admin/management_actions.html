@@ -1,0 +1,35 @@
+<!-- apps/core/templates/admin/management_actions.html -->
+{% extends "admin/base_site.html" %}
+{% block content %}
+<h1>Database Management Actions</h1>
+<p>Use these actions to populate the database with test data for development or to clean it for a fresh start.</p>
+
+{% if messages %}
+<ul class="messagelist">
+    {% for message in messages %}
+    <li{% if message.tags %} class="{{ message.tags }}"{% endif %}>{{ message }}</li>
+    {% endfor %}
+</ul>
+{% endif %}
+
+<!-- Display Command Output -->
+{% if output %}
+<div style="margin-top: 20px;">
+    <h2>Command Output:</h2>
+    <pre style="background: #f7f7f7; border: 1px solid #eee; padding: 15px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; color: #333;">{{ output }}</pre>
+</div>
+{% endif %}
+
+
+<form method="post">
+    {% csrf_token %}
+    <div style="padding: 10px 0;">
+        <button type="submit" name="populate" class="button">Populate Database with Test Data</button>
+        <p style="padding-left: 10px; color: #666; font-size: 12px; margin-top: 5px;">Creates universities, programs, roles, and test users. This will only run if the database is empty.</p>
+    </div>
+    <div style="padding: 10px 0;">
+        <button type="submit" name="clean" class="button" style="background-color: #ba2121; border-color: #ba2121;">Clean Test Data</button>
+        <p style="padding-left: 10px; color: #666; font-size: 12px; margin-top: 5px;"><strong>Warning:</strong> This will delete all programs, universities, and test users.</p>
+    </div>
+</form>
+{% endblock %}
