@@ -1,45 +1,32 @@
-# start of Dockerfile.backend
-# Stage 1: Build stage with dependencies
-FROM python:3.11-slim as builder
-
-WORKDIR /app
-
-# Install system dependencies required for psycopg2 and Pillow
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libpq-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-# Install python dependencies
-COPY ./backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Stage 2: Final image
+# start of backend/Dockerfile
+# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
-WORKDIR /app
-
-# Set environment variables
+# Set environment variables for Python
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-# Install only necessary runtime system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends libpq5 && \
-    rm -rf /var/lib/apt/lists/*
+# Set the working directory in the container
+WORKDIR /app
 
-# Copy installed packages from the builder stage
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+# Install system dependencies needed for psycopg2 (PostgreSQL driver)
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev gcc && rm -rf /var/lib/apt/lists/*
 
-# Copy application code
-COPY ./backend /app
+# Copy the requirements file and install dependencies
+# We add gunicorn here for a production-ready server
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && pip install gunicorn
+
+# Copy the rest of the backend application code
+COPY . .
+
+# Collect static files
+RUN python manage.py collectstatic --no-input
 
 # Expose the port the app runs on
 EXPOSE 8000
 
-# Entrypoint script to handle migrations and starting the server
-COPY ./entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]
-# end of Dockerfile.backend
+# Run migrations and start the Gunicorn server when the container launches.
+# This single command ensures migrations are applied before the app starts.
+CMD sh -c "python manage.py migrate && gunicorn student_affairs_project.wsgi:application --bind 0.0.0.0:8000"
+# end of backend/Dockerfile
