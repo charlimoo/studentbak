@@ -1,0 +1,3 @@
+# start of apps/core/__init__.py
+
+# end of apps/core/__init__.py

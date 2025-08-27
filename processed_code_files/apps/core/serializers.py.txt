@@ -1,0 +1,60 @@
+# start of apps/core/serializers.py
+# apps/core/serializers.py
+from rest_framework import serializers
+from rest_framework_recursive.fields import RecursiveField
+from .models import (
+    University, Program, OrganizationUnit, NotificationTemplate,
+    SystemList, Permit, Scholarship, Notification
+)
+
+class UniversitySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = University
+        fields = ['id', 'name']
+
+class ProgramSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Program
+        fields = ['id', 'name']
+
+class OrganizationUnitSerializer(serializers.ModelSerializer):
+    """Serializer for the OrganizationUnit model, including its children recursively."""
+    children = RecursiveField(many=True, read_only=True)
+    class Meta:
+        model = OrganizationUnit
+        fields = ['id', 'name', 'type', 'manager_name', 'description', 'parent', 'children']
+
+class NotificationTemplateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NotificationTemplate
+        fields = ['id', 'name', 'type', 'subject', 'body']
+
+class SystemListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SystemList
+        fields = ['id', 'name', 'items']
+
+class PermitSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Permit
+        fields = [
+            'id', 'permit_type', 'institution_name', 'status', 
+            'issue_date', 'expiry_date', 'permit_number', 'details'
+        ]
+
+class ScholarshipSerializer(serializers.ModelSerializer):
+    university_name = serializers.CharField(source='university.name', read_only=True)
+    class Meta:
+        model = Scholarship
+        fields = [
+            'id', 'title', 'university', 'university_name', 'field_of_study',
+            'description', 'duration', 'financial_coverage', 'application_deadline',
+            'requirements', 'is_active', 'created_at'
+        ]
+        read_only_fields = ['university_name', 'created_at']
+
+class NotificationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Notification
+        fields = ['id', 'title', 'message', 'is_read', 'timestamp', 'link']
+# end of apps/core/serializers.py

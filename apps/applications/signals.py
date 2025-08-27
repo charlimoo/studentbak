@@ -1,3 +1,4 @@
+# start of apps/applications/signals.py
 # apps/applications/signals.py
 from django.db import transaction
 from django.db.models.signals import post_save
@@ -47,7 +48,10 @@ def on_application_task_save(sender, instance, created, **kwargs):
     Checks if a final decision can now be made on the parent application.
     """
     task = instance
+    # Only run the final decision logic when a task is marked as completed.
     if task.status == ApplicationTask.StatusChoices.COMPLETED:
-        # Using transaction.on_commit ensures this runs only after the
+        # Using transaction.on_commit ensures this logic runs only after the
         # database transaction that saved the task has successfully completed.
+        # This prevents race conditions and data inconsistencies.
         transaction.on_commit(lambda: process_final_application_decision(task.application))
+# end of apps/applications/signals.py

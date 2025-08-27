@@ -1,3 +1,4 @@
+# start of student_affairs_project/urls.py
 # student_affairs_project/urls.py
 from django.contrib import admin
 from django.urls import path, include
@@ -15,6 +16,8 @@ api_v1_urlpatterns = [
     path('', include('apps.applications.urls')),
     path('', include('apps.users.urls')),
     path('choices/', include('apps.core.urls')),
+    # --- FIX: Add the support app's URLs to the main API ---
+    path('support/', include('apps.support.urls')),
 ]
 
 # --- Main URL Patterns ---
@@ -50,3 +53,4 @@ if settings.DEBUG:
 #     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
 #     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
 # ]
+# end of student_affairs_project/urls.py

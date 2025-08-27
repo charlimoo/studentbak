@@ -1,3 +1,4 @@
+# start of apps/users/urls.py
 # apps/users/urls.py
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
@@ -5,12 +6,15 @@ from .views import (
     UserRegistrationView, InstitutionRegistrationView, UserMeView, UserViewSet, RoleViewSet, PermissionListView,
     ImpersonateStartView, ImpersonateStopView,
     UserProfileView, ChangePasswordView, UserNotificationSettingsView,
-    PasswordResetRequestView, PasswordResetConfirmView
+    PasswordResetRequestView, PasswordResetConfirmView,
+    InstitutionStaffViewSet # --- FIX: Import the new viewset
 )
 
 router = DefaultRouter()
 router.register(r'management', UserViewSet, basename='user-management')
 router.register(r'roles', RoleViewSet, basename='role')
+# --- FIX: Register the new endpoint for institution staff management ---
+router.register(r'institution-staff', InstitutionStaffViewSet, basename='institution-staff')
 
 auth_urlpatterns = [
     path('register/', UserRegistrationView.as_view(), name='user-register'),
@@ -38,3 +42,4 @@ urlpatterns = [
     path('permissions/', PermissionListView.as_view(), name='permission-list'),
     path('', include(router.urls)),
 ]
+# end of apps/users/urls.py

@@ -57,7 +57,8 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
             return [permissions.IsAuthenticated(), IsApplicantOwner()]
         if self.action in ['retrieve', 'claim', 'take_action']:
             return [permissions.IsAuthenticated(), IsRelatedToApplication()]
-        if self.action in ['workbench', 'all_applications']:
+        # --- FIX: Add new permission scope for the university_applications action ---
+        if self.action in ['workbench', 'all_applications', 'university_applications']:
             return [permissions.IsAuthenticated()]
         return [permissions.IsAuthenticated()]
 
@@ -77,6 +78,19 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
         with transaction.atomic():
             self.perform_update(serializer)
             application = serializer.instance
+
+            doc_index = 0
+            while f'documents[{doc_index}][file]' in request.FILES:
+                doc_type = request.data.get(f'documents[{doc_index}][document_type]')
+                doc_file = request.FILES.get(f'documents[{doc_index}][file]')
+                
+                if doc_type and doc_file:
+                    ApplicationDocument.objects.create(
+                        application=application,
+                        document_type=doc_type,
+                        file=doc_file
+                    )
+                doc_index += 1
             
             application.status = Application.StatusChoices.PENDING_REVIEW
             application.save(update_fields=['status'])
@@ -107,10 +121,6 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
 
     @action(detail=False, methods=['get'], url_path='my-submitted')
     def my_submitted_applications(self, request):
-        """
-        Returns applications for the logged-in institution.
-        Logic changed: Now returns all applications associated with the institution's affiliated universities.
-        """
         user = request.user
         if not user.roles.filter(name='Recruitment Institution').exists():
             return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
@@ -133,46 +143,36 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
         serializer = self.get_serializer(institution_apps, many=True)
         return Response(serializer.data)
     
+    # --- FIX START: REFINED WORKBENCH LOGIC ---
     @action(detail=False, methods=['get'], url_path='workbench')
     def workbench(self, request):
         user = request.user
-        logger.info("\n--- [WORKBENCH] Starting for user: %s ---", user.email)
+        logger.info("[WORKBENCH] Starting for user: %s", user.email)
 
         if not user.roles.filter(name='UniversityExpert').exists():
-            logger.warning("[WORKBENCH] Access denied for %s: not a UniversityExpert.", user.email)
             return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
 
         expert_universities = user.universities.all()
-        expert_university_names = list(expert_universities.values_list('name', flat=True))
-        logger.info("[WORKBENCH] Step 1: User is an expert for universities: %s", expert_university_names)
-
-        relevant_tasks_q = models.Q(university__in=expert_universities, status=ApplicationTask.StatusChoices.UNCLAIMED) | \
-                           models.Q(assigned_expert=user, status=ApplicationTask.StatusChoices.ASSIGNED)
-        
-        relevant_tasks = ApplicationTask.objects.filter(relevant_tasks_q).select_related('application')
-        logger.info("[WORKBENCH] Step 2: Found %d potentially relevant tasks (unclaimed for user's unis OR assigned to user).", relevant_tasks.count())
-
-        if not relevant_tasks.exists():
-            logger.info("[WORKBENCH] No relevant tasks found. Workbench will be empty.")
-            logger.info("--- [WORKBENCH] End ---")
+        if not expert_universities.exists():
+            # If an expert is not assigned to any university, their workbench is empty.
             return Response({"count": 0, "next": None, "previous": None, "results": []})
 
-        app_statuses = {task.application.tracking_code: task.application.status for task in relevant_tasks}
-        logger.info("[WORKBENCH] Step 3: Checking the status of the parent applications for these tasks:")
-        for code, status_val in app_statuses.items():
-            logger.info("  - App %s has status: '%s'", code, status_val)
-
-        application_ids = relevant_tasks.filter(
+        logger.info("[WORKBENCH] User is expert for: %s", list(expert_universities.values_list('name', flat=True)))
+        
+        # 1. Get tasks unclaimed for the expert's universities
+        unclaimed_q = models.Q(university__in=expert_universities, status=ApplicationTask.StatusChoices.UNCLAIMED)
+        # 2. Get tasks already assigned to this expert
+        assigned_q = models.Q(assigned_expert=user, status=ApplicationTask.StatusChoices.ASSIGNED)
+        
+        # Find all application IDs that match these task criteria AND are in PENDING_REVIEW status
+        application_ids = ApplicationTask.objects.filter(unclaimed_q | assigned_q).filter(
             application__status=Application.StatusChoices.PENDING_REVIEW
         ).values_list('application_id', flat=True).distinct()
         
-        final_app_ids = list(application_ids)
-        logger.info("[WORKBENCH] Step 4: After filtering for Application Status = 'PENDING_REVIEW', found %d matching application(s): %s", len(final_app_ids), final_app_ids)
+        logger.info("[WORKBENCH] Found %d relevant application(s) in PENDING_REVIEW state.", len(application_ids))
 
-        queryset = Application.objects.filter(id__in=final_app_ids)
-
-        logger.info("[WORKBENCH] Final queryset for workbench contains %d applications.", queryset.count())
-        logger.info("--- [WORKBENCH] End ---\n")
+        # Final queryset for the applications
+        queryset = self.get_queryset().filter(id__in=application_ids)
 
         page = self.paginate_queryset(queryset)
         if page is not None:
@@ -181,6 +181,39 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
 
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
+    # --- FIX END: REFINED WORKBENCH LOGIC ---
+
+    # --- FIX START: NEW ACTION FOR UNIVERSITY-SCOPED APPLICATIONS ---
+    @action(detail=False, methods=['get'], url_path='university-apps')
+    def university_applications(self, request):
+        """
+        Returns all applications related to the universities of the logged-in
+        UniversityExpert, for the "همه درخواست ها" page.
+        """
+        user = request.user
+        if not user.roles.filter(name='UniversityExpert').exists():
+            return Response({"detail": "Access denied."}, status=status.HTTP_403_FORBIDDEN)
+
+        expert_universities = user.universities.all()
+        if not expert_universities.exists():
+            return Response({"count": 0, "next": None, "previous": None, "results": []})
+
+        # Filter applications where at least one of the university choices
+        # matches one of the expert's affiliated universities.
+        queryset = self.get_queryset().filter(
+            university_choices__university__in=expert_universities
+        ).distinct()
+
+        # Apply standard filtering (search, etc.) and pagination
+        filtered_queryset = self.filter_queryset(queryset)
+        page = self.paginate_queryset(filtered_queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(filtered_queryset, many=True)
+        return Response(serializer.data)
+    # --- FIX END: NEW ACTION FOR UNIVERSITY-SCOPED APPLICATIONS ---
 
     @action(detail=False, methods=['get'], url_path='all', permission_classes=[IsHeadOfOrganization])
     def all_applications(self, request):
@@ -321,3 +354,4 @@ class InternalNoteViewSet(viewsets.ModelViewSet):
         application_tracking_code = self.kwargs.get('application_tracking_code')
         application = get_object_or_404(Application, tracking_code=application_tracking_code)
         serializer.save(author=self.request.user, application=application)
+# end of apps/applications/views.py

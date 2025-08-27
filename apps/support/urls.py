@@ -1,3 +1,4 @@
+# start of apps/support/urls.py
 # apps/support/urls.py
 from django.urls import path, include
 from rest_framework_nested import routers
@@ -16,3 +17,4 @@ urlpatterns = [
     path('', include(router.urls)),
     path('', include(tickets_router.urls)),
 ]
+# end of apps/support/urls.py

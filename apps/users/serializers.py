@@ -1,3 +1,4 @@
+# start of apps/users/serializers.py
 # apps/users/serializers.py
 from django.contrib.auth.password_validation import validate_password
 from django.db import transaction
@@ -18,12 +19,10 @@ class RoleSerializer(serializers.ModelSerializer):
 
 class UserSerializer(serializers.ModelSerializer):
     roles = RoleSerializer(many=True, read_only=True)
-    # --- FIX: ADD THIS LINE TO INCLUDE UNIVERSITIES IN THE SERIALIZER ---
     universities = UniversitySerializer(many=True, read_only=True)
     
     class Meta:
         model = User
-        # --- FIX: ADD 'universities' TO THE LIST OF FIELDS ---
         fields = ['id', 'email', 'full_name', 'roles', 'universities', 'profile_picture', 'is_active', 'is_staff']
 
 # --- Action-Specific Serializers ---
@@ -133,3 +132,26 @@ class UserAdminSerializer(serializers.ModelSerializer):
             instance.set_password(password)
             instance.save()
         return instance
+
+class InstitutionStaffSerializer(serializers.ModelSerializer):
+    """
+    Serializer for institutions to list, create, and manage their staff (University Experts).
+    """
+    password = serializers.CharField(
+        write_only=True, required=True, 
+        validators=[validate_password], style={'input_type': 'password'}
+    )
+    roles = RoleSerializer(many=True, read_only=True)
+    universities = UniversitySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = User
+        # --- FIX: ADD 'password' TO THE LIST OF FIELDS TO BE PROCESSED ---
+        fields = ['id', 'email', 'full_name', 'password', 'roles', 'universities', 'is_active']
+        read_only_fields = ['id', 'roles', 'universities', 'is_active']
+
+    def validate_email(self, value):
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("A user with this email already exists.")
+        return value
+# end of apps/users/serializers.py

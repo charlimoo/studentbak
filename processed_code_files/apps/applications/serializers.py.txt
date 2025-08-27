@@ -1,0 +1,222 @@
+# start of apps/applications/serializers.py
+# start of apps/applications/serializers.py
+# apps/applications/serializers.py
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import FileExtensionValidator
+from rest_framework import serializers
+from drf_writable_nested.serializers import WritableNestedModelSerializer
+import openpyxl # Import for the exporter
+
+from .models import (
+    Application, AcademicHistory, UniversityChoice,
+    ApplicationDocument, ApplicationLog, ApplicationTask, InternalNote
+)
+from apps.core.models import Program, University
+from apps.users.models import User, Role
+from apps.core.serializers import UniversitySerializer, ProgramSerializer
+from apps.users.serializers import UserSerializer
+
+# --- Validation & Helper Functions ---
+def file_size_validator(value):
+    limit = 5 * 1024 * 1024  # 5 MB
+    if value.size > limit:
+        raise DjangoValidationError('File too large. Size should not exceed 5 MB.')
+
+def validate_application_form_data(application_type, form_data):
+    required_fields = {}
+    if application_type == 'VISA_EXTENSION':
+        required_fields = {'current_visa_number': str, 'current_visa_expiry': str, 'requested_duration': str}
+    elif application_type == 'INTERNAL_EXIT_PERMIT':
+        required_fields = {'destination_university': str, 'reason_for_request': str}
+
+    for field, field_type in required_fields.items():
+        if field not in form_data:
+            raise serializers.ValidationError(f"'{field}' is a required field for '{application_type}'.")
+        if not isinstance(form_data.get(field), field_type):
+            raise serializers.ValidationError(f"'{field}' must be of type {field_type.__name__}.")
+    return form_data
+
+# --- Nested & Read-Only Serializers ---
+class AcademicHistorySerializer(serializers.ModelSerializer):
+    certificate_file = serializers.FileField(use_url=True, read_only=True, required=False, allow_null=True)
+    class Meta:
+        model = AcademicHistory
+        # --- FIX: INCLUDE 'id' IN THE FIELDS ---
+        fields = ['id', 'degree_level', 'country', 'university_name', 'field_of_study', 'gpa', 'certificate_file']
+        # Make 'id' optional for creation
+        extra_kwargs = {'id': {'read_only': False, 'required': False}}
+
+class UniversityChoiceSerializer(serializers.ModelSerializer):
+    university = UniversitySerializer(read_only=True)
+    program = ProgramSerializer(read_only=True)
+    university_id = serializers.PrimaryKeyRelatedField(queryset=University.objects.all(), write_only=True, source='university')
+    program_id = serializers.PrimaryKeyRelatedField(queryset=Program.objects.all(), write_only=True, source='program')
+    class Meta:
+        model = UniversityChoice
+        # --- FIX: INCLUDE 'id' IN THE FIELDS ---
+        fields = ['id', 'university', 'program', 'priority', 'university_id', 'program_id']
+        # Make 'id' optional for creation
+        extra_kwargs = {'id': {'read_only': False, 'required': False}}
+
+
+class ApplicationDocumentSerializer(serializers.ModelSerializer):
+    # This includes the fix from Phase 16
+    file = serializers.FileField(use_url=True, read_only=True)
+    class Meta:
+        model = ApplicationDocument
+        exclude = ('application',)
+
+class ApplicationLogSerializer(serializers.ModelSerializer):
+    actor = UserSerializer(read_only=True)
+    comment = serializers.CharField() # Ensure comment is serialized as a string
+    class Meta:
+        model = ApplicationLog
+        fields = ['id', 'actor', 'action', 'comment', 'timestamp']
+
+class ApplicationTaskSerializer(serializers.ModelSerializer):
+    university = UniversitySerializer(read_only=True)
+    assigned_expert = UserSerializer(read_only=True)
+    class Meta:
+        model = ApplicationTask
+        fields = ['id', 'university', 'status', 'decision', 'assigned_expert']
+
+class InternalNoteSerializer(serializers.ModelSerializer):
+    author = UserSerializer(read_only=True)
+    class Meta:
+        model = InternalNote
+        fields = ['id', 'author', 'message', 'timestamp']
+        read_only_fields = ['id', 'author', 'timestamp']
+
+
+# --- Main Application Serializers ---
+class ApplicationListSerializer(serializers.ModelSerializer):
+    applicant = UserSerializer(read_only=True)
+    class Meta:
+        model = Application
+        fields = ['tracking_code', 'status', 'application_type', 'full_name', 'created_at', 'applicant']
+
+
+class ApplicationDetailSerializer(serializers.ModelSerializer):
+    applicant = UserSerializer(read_only=True)
+    academic_histories = AcademicHistorySerializer(many=True, read_only=True)
+    university_choices = UniversityChoiceSerializer(many=True, read_only=True)
+    documents = ApplicationDocumentSerializer(many=True, read_only=True)
+    logs = ApplicationLogSerializer(many=True, read_only=True)
+    tasks = ApplicationTaskSerializer(many=True, read_only=True)
+    internal_notes = InternalNoteSerializer(many=True, read_only=True) 
+    class Meta:
+        model = Application
+        fields = '__all__'
+
+class ApplicationCreateSerializer(WritableNestedModelSerializer):
+    applicant = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    # --- NEW: Fields for institutions to create student users ---
+    applicant_email = serializers.EmailField(write_only=True, required=False)
+
+    application_type = serializers.ChoiceField(choices=Application.ApplicationType.choices)
+    form_data = serializers.JSONField(required=False, initial=dict)
+    academic_histories = AcademicHistorySerializer(many=True, required=False)
+    university_choices = UniversityChoiceSerializer(many=True, required=False)
+    documents = ApplicationDocumentSerializer(many=True, required=False)
+
+    class Meta:
+        model = Application
+        exclude = ('status', 'submitted_by_institution')
+
+    def validate(self, data):
+        user = self.context['request'].user
+        is_institution = user.roles.filter(name='Recruitment Institution').exists()
+
+        if is_institution:
+            if not data.get('applicant_email'):
+                raise serializers.ValidationError({"applicant_email": "This field is required for institution submissions."})
+            if not data.get('full_name'):
+                raise serializers.ValidationError({"full_name": "Applicant's full name is required for institution submissions."})
+        
+        app_type = data.get('application_type')
+        if not app_type and self.instance:
+            app_type = self.instance.application_type
+            
+        form_data = data.get('form_data', {})
+        
+        if app_type != 'NEW_ADMISSION' and not form_data:
+            raise serializers.ValidationError({"form_data": "This field is required for the selected application type."})
+            
+        data['form_data'] = validate_application_form_data(app_type, form_data)
+        
+        if app_type == 'NEW_ADMISSION':
+            if not data.get('academic_histories'):
+                raise serializers.ValidationError({"academic_histories": "This field is required for New Admission."})
+            if not data.get('university_choices'):
+                raise serializers.ValidationError({"university_choices": "This field is required for New Admission."})
+            choices_data = data.get('university_choices', [])
+            priorities = [choice['priority'] for choice in choices_data]
+            if len(priorities) != len(set(priorities)):
+                raise serializers.ValidationError({"university_choices": "Priorities must be unique."})
+        return data
+
+    def create(self, validated_data):
+        request_user = self.context['request'].user
+        is_institution = request_user.roles.filter(name='Recruitment Institution').exists()
+
+        if is_institution:
+            applicant_email = validated_data.pop('applicant_email')
+            applicant_full_name = validated_data.get('full_name')
+
+            applicant, created = User.objects.get_or_create(
+                email__iexact=applicant_email,
+                defaults={'email': applicant_email.lower(), 'full_name': applicant_full_name}
+            )
+            if created:
+                try:
+                    applicant_role, _ = Role.objects.get_or_create(name='Applicant')
+                    applicant.roles.add(applicant_role)
+                except Role.DoesNotExist:
+                    pass 
+            
+            validated_data['applicant'] = applicant
+            validated_data['submitted_by_institution'] = request_user
+        
+        application = super().create(validated_data)
+        ApplicationLog.objects.create(application=application, actor=request_user, action="Application submitted.")
+        for choice in application.university_choices.all():
+            ApplicationTask.objects.create(application=application, university=choice.university)
+        return application
+
+
+# --- THIS IS THE SERIALIZER THAT WAS MISSING ---
+class ApplicationUpdateSerializer(WritableNestedModelSerializer):
+    """Serializer for updating/resubmitting an application."""
+    academic_histories = AcademicHistorySerializer(many=True, required=False)
+    university_choices = UniversityChoiceSerializer(many=True, required=False)
+    documents = ApplicationDocumentSerializer(many=True, required=False)
+    form_data = serializers.JSONField(required=False)
+
+    class Meta:
+        model = Application
+        fields = [
+            'application_type', 'full_name', 'date_of_birth', 'country_of_residence',
+            'father_name', 'grandfather_name', 'email', 'form_data',
+            'academic_histories', 'university_choices', 'documents'
+        ]
+        read_only_fields = ('application_type',)
+        
+    validate = ApplicationCreateSerializer.validate
+
+
+# --- Action-Specific Serializers ---
+class ApplicationActionSerializer(serializers.Serializer):
+    ACTION_CHOICES = [('APPROVE', 'Approve'), ('REJECT', 'Reject'), ('CORRECT', 'Send for Correction')]
+    action = serializers.ChoiceField(choices=ACTION_CHOICES, required=True)
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=1000)
+
+    def validate_comment(self, value):
+        action = self.initial_data.get('action')
+        if action in ['REJECT', 'CORRECT'] and not value:
+            raise serializers.ValidationError('A comment is required for this action.')
+        return value
+
+class TaskReassignmentSerializer(serializers.Serializer):
+    user_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), label="New Expert User ID")
+    
+# end of apps/applications/serializers.py

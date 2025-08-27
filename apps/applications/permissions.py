@@ -1,3 +1,4 @@
+# start of apps/applications/permissions.py
 # apps/applications/permissions.py
 from rest_framework.permissions import BasePermission
 from .models import Application, ApplicationTask
@@ -24,6 +25,7 @@ class IsApplicantOwner(BasePermission):
         if request.method in ('GET', 'HEAD', 'OPTIONS'):
             return True
 
+        # --- FIX: ADDED STATUS CHECK FOR UNSAFE METHODS ---
         # For unsafe methods (PUT, PATCH), we require a specific status.
         if request.method in ('PUT', 'PATCH'):
             if obj.status == Application.StatusChoices.PENDING_CORRECTION:
@@ -86,3 +88,4 @@ class IsAssignedExpert(BasePermission):
             university_id=university_pk,
             assigned_expert=user
         ).exists()
+# end of apps/applications/permissions.py

@@ -1,0 +1,60 @@
+# start of apps/applications/admin.py
+# apps/applications/admin.py
+from django.contrib import admin
+from .models import (
+    Application, AcademicHistory, UniversityChoice,
+    ApplicationDocument, ApplicationLog, ApplicationTask
+)
+
+class AcademicHistoryInline(admin.TabularInline):
+    model = AcademicHistory
+    extra = 1
+
+class UniversityChoiceInline(admin.TabularInline):
+    model = UniversityChoice
+    extra = 1
+
+class ApplicationDocumentInline(admin.TabularInline):
+    model = ApplicationDocument
+    extra = 1
+
+class ApplicationLogInline(admin.TabularInline):
+    model = ApplicationLog
+    readonly_fields = ('actor', 'action', 'comment', 'timestamp')
+    can_delete = False
+    extra = 0
+
+class ApplicationTaskInline(admin.TabularInline):
+    model = ApplicationTask
+    readonly_fields = ('university', 'status', 'decision', 'assigned_expert')
+    can_delete = False
+    extra = 0
+
+@admin.register(Application)
+class ApplicationAdmin(admin.ModelAdmin):
+    list_display = ('tracking_code', 'full_name', 'applicant', 'status', 'created_at')
+    list_filter = ('status', 'country_of_residence', 'created_at')
+    search_fields = ('tracking_code', 'full_name', 'applicant__email')
+    readonly_fields = ('tracking_code', 'created_at', 'updated_at')
+    inlines = [
+        UniversityChoiceInline,
+        AcademicHistoryInline,
+        ApplicationDocumentInline,
+        ApplicationTaskInline,
+        ApplicationLogInline,
+    ]
+
+@admin.register(ApplicationTask)
+class ApplicationTaskAdmin(admin.ModelAdmin):
+    list_display = ('application', 'university', 'status', 'decision', 'assigned_expert')
+    list_filter = ('status', 'decision', 'university')
+    search_fields = ('application__tracking_code', 'assigned_expert__email')
+
+# We don't need to register the other models separately
+# as they are accessible via the ApplicationAdmin inlines.
+# However, registering them can be useful for direct access if needed.
+# admin.site.register(AcademicHistory)
+# admin.site.register(UniversityChoice)
+# admin.site.register(ApplicationDocument)
+# admin.site.register(ApplicationLog)
+# end of apps/applications/admin.py

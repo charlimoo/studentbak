@@ -1,0 +1,34 @@
+# start of Dockerfile
+# start of backend/Dockerfile
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Set environment variables for Python
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Install system dependencies needed for psycopg2 (PostgreSQL driver)
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev gcc && rm -rf /var/lib/apt/lists/*
+
+# Copy the requirements file and install dependencies
+# We add gunicorn here for a production-ready server
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && pip install gunicorn
+
+# Copy the rest of the backend application code
+COPY . .
+
+# Collect static files
+RUN python manage.py collectstatic --no-input
+
+# Expose the port the app runs on
+EXPOSE 8000
+
+# Run migrations and start the Gunicorn server when the container launches.
+# This single command ensures migrations are applied before the app starts.
+CMD sh -c "python manage.py migrate && gunicorn student_affairs_project.wsgi:application --bind 0.0.0.0:8000"
+# end of backend/Dockerfile
+# end of Dockerfile

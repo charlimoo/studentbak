@@ -1,0 +1,3 @@
+# start of apps/core/management/commands/__init__.py
+
+# end of apps/core/management/commands/__init__.py

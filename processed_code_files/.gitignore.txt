@@ -1,0 +1,12 @@
+# start of .gitignore
+# start of backend/.dockerignore
+__pycache__/
+*.pyc
+.venv/
+.env
+db.sqlite3
+staticfiles/
+media/
+venv/
+# end of backend/.dockerignore
+# end of .gitignore

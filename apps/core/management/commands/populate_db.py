@@ -1,4 +1,3 @@
-# start of apps/core/management/commands/populate_db.py
 # apps/core/management/commands/populate_db.py
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -46,6 +45,16 @@ UNIVERSITY_DATA = {
     ],
 }
 
+# A map for creating user-friendly email domains for test users
+UNIVERSITY_EMAIL_MAP = {
+    "دانشگاه تهران": "tehran",
+    "دانشگاه صنعتی شریف": "sharif",
+    "دانشگاه امیرکبیر": "amirkabir",
+    "دانشگاه علامه طباطبایی": "alameh",
+    "دانشگاه شهید بهشتی": "beheshti",
+}
+
+
 class Command(BaseCommand):
     help = 'Populates the database with initial data for testing and development based on the project document.'
 
@@ -72,9 +81,6 @@ class Command(BaseCommand):
                 self.stdout.write(f'  - Created University: {uni_name}')
             for prog_name in programs:
                 Program.objects.get_or_create(university=university, name=prog_name)
-        
-        uni_tehran = University.objects.get(name="دانشگاه تهران")
-        uni_sharif = University.objects.get(name="دانشگاه صنعتی شریف")
 
         # 3. Create Test Users
         self.stdout.write('Creating test user accounts...')
@@ -88,28 +94,32 @@ class Command(BaseCommand):
         student_user.roles.add(applicant_role)
         self.stdout.write(self.style.SUCCESS('  - Created Student: ali.karamudini19@gmail.com (pw: Aa793145268)'))
         
-        # University Expert
-        expert_user = User.objects.create_user(
-            email='expert@university.com',
-            full_name='کارشناس دانشگاه',
-            password='password123',
-            is_staff=True
-        )
-        expert_user.roles.add(expert_role)
-        expert_user.universities.add(uni_tehran)
-        self.stdout.write(self.style.SUCCESS('  - Created University Expert: expert@university.com (pw: password123)'))
+        # Create an expert and institution user for each university
+        for uni_name, email_domain in UNIVERSITY_EMAIL_MAP.items():
+            university = University.objects.get(name=uni_name)
+            
+            # University Expert (Staff User)
+            expert_email = f'expert@{email_domain}.com'
+            expert_user = User.objects.create_user(
+                email=expert_email,
+                full_name=f'کارشناس {uni_name}',
+                password='password123',
+                is_staff=True
+            )
+            expert_user.roles.add(expert_role)
+            expert_user.universities.add(university)
+            self.stdout.write(self.style.SUCCESS(f'  - Created Expert for {uni_name}: {expert_email} (pw: password123)'))
 
-        # Recruitment Institution
-        inst_user = User.objects.create_user(
-            email='institution@recruitment.com',
-            full_name='موسسه اعزام دانشجو',
-            password='password123'
-        )
-        inst_user.roles.add(institution_role)
-        # --- FIX: Associate institution with universities to allow viewing of applicants ---
-        inst_user.universities.add(uni_tehran)
-        inst_user.universities.add(uni_sharif)
-        self.stdout.write(self.style.SUCCESS('  - Created Institution User: institution@recruitment.com (pw: password123)'))
+            # Recruitment Institution
+            inst_email = f'institution@{email_domain}.com'
+            inst_user = User.objects.create_user(
+                email=inst_email,
+                full_name=f'موسسه اعزام {uni_name}',
+                password='password123'
+            )
+            inst_user.roles.add(institution_role)
+            inst_user.universities.add(university)
+            self.stdout.write(self.style.SUCCESS(f'  - Created Institution for {uni_name}: {inst_email} (pw: password123)'))
 
         # Head of Organization (Admin)
         head_user = User.objects.create_user(

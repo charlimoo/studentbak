@@ -1,0 +1,44 @@
+# start of apps/users/tasks.py
+# apps/users/tasks.py
+from celery import shared_task
+from django.core.mail import send_mail
+from django.conf import settings
+from django.template.loader import render_to_string
+from .models import User
+
+# THE FIX 1: Add bind=True to the decorator
+@shared_task(name="send_password_reset_email", bind=True)
+# THE FIX 2: Add 'self' as the first argument
+def send_password_reset_email_task(self, user_id, token_str):
+    """
+    Asynchronously sends a password reset email to a user.
+    """
+    try:
+        user = User.objects.get(pk=user_id)
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+        reset_link = f"{frontend_url}/reset-password?token={token_str}"
+        
+        context = {
+            'full_name': user.full_name or user.email,
+            'reset_link': reset_link,
+        }
+        
+        subject = render_to_string('emails/password_reset_subject.txt', context).strip()
+        html_message = render_to_string('emails/password_reset_body.html', context)
+        
+        send_mail(
+            subject=subject,
+            message='',
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            html_message=html_message,
+            fail_silently=False,
+        )
+        return f"Password reset email sent to {user.email}"
+    except User.DoesNotExist:
+        return f"User with ID {user_id} not found. Cannot send email."
+    except Exception as e:
+        # It's better to re-raise the exception to have Celery mark the task as failed
+        # and retry based on its configuration. The 'self.retry' call is now correct.
+        raise self.retry(exc=e, countdown=60)
+# end of apps/users/tasks.py

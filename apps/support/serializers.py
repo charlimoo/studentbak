@@ -1,3 +1,4 @@
+# start of apps/support/serializers.py
 # apps/support/serializers.py
 from rest_framework import serializers
 from .models import SupportTicket, TicketMessage
@@ -28,9 +29,12 @@ class SupportTicketDetailSerializer(serializers.ModelSerializer):
 class SupportTicketCreateSerializer(serializers.ModelSerializer):
     """Serializer used for creating a new support ticket."""
     # The first message is created along with the ticket, so we accept its content here.
+    # These fields do not exist on the SupportTicket model but are used by the view.
     message = serializers.CharField(write_only=True, required=True, min_length=10)
     attachment = serializers.FileField(write_only=True, required=False, allow_null=True)
     
     class Meta:
         model = SupportTicket
+        # The user will be set automatically from the request.
         fields = ['subject', 'category', 'message', 'attachment']
+# end of apps/support/serializers.py

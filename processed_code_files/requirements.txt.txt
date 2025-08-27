@@ -1,0 +1,31 @@
+# start of requirements.txt
+# requirements.txt
+
+# Core Frameworks
+django==4.2.13
+djangorestframework==3.15.1
+psycopg2-binary==2.9.9
+
+# Authentication & API Tools
+djangorestframework-simplejwt==5.3.1
+
+# Filtering and Nested Routes
+django-filter==24.2
+drf-nested-routers==0.93.4
+
+# Application Logic
+drf-writable-nested==0.7.0
+django-impersonate==1.9.1
+django-mptt
+djangorestframework-recursive
+django-cors-headers
+
+# Asynchronous Tasks (for notifications)
+celery==5.4.0
+redis==5.0.4
+openpyxl
+reportlab
+
+Pillow
+python-dotenv
+# end of requirements.txt

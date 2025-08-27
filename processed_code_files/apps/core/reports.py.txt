@@ -1,0 +1,103 @@
+# start of apps/core/reports.py
+# apps/core/reports.py
+from datetime import date, timedelta
+from django.db import models
+from django.db.models import Count
+from django.db.models.functions import TruncDay, TruncWeek, TruncMonth
+from apps.applications.models import Application
+
+class ReportGenerator:
+    """
+    A service class for generating various report data sets based on a date range.
+    This encapsulates complex database query logic away from the view.
+    """
+
+    def __init__(self, start_date_str, end_date_str):
+        self.start_date = self._parse_date(start_date_str, date.today() - timedelta(days=29))
+        self.end_date = self._parse_date(end_date_str, date.today())
+
+    def _parse_date(self, date_str, default_date):
+        """Safely parses an ISO format date string, falling back to a default."""
+        if not date_str:
+            return default_date
+        try:
+            return date.fromisoformat(date_str)
+        except (ValueError, TypeError):
+            return default_date # Return default if format is invalid
+
+    def get_applications_by_type(self):
+        """
+        Generates a summary of applications grouped by their type within the date range.
+        Returns a dictionary mapping type display name to its count.
+        """
+        queryset = Application.objects.filter(
+            created_at__date__range=(self.start_date, self.end_date)
+        )
+        
+        # Using a dictionary comprehension for a clean, aggregated result
+        return {
+            item['application_type_display']: item['count']
+            for item in queryset
+                .annotate(application_type_display=models.F('application_type')) # Use F() for direct field access
+                .values('application_type_display')
+                .annotate(count=Count('id'))
+                .order_by('-count')
+        }
+
+    def get_applications_over_time(self, group_by='day'):
+        """
+        Generates a time-series of application counts, grouped by day, week, or month.
+        """
+        queryset = Application.objects.filter(
+            created_at__date__range=(self.start_date, self.end_date)
+        )
+        
+        # Choose the appropriate truncation function based on the grouping parameter
+        if group_by == 'month':
+            trunc_func = TruncMonth('created_at')
+        elif group_by == 'week':
+            trunc_func = TruncWeek('created_at')
+        else: # Default to day
+            trunc_func = TruncDay('created_at')
+            
+        return (
+            queryset
+                .annotate(period=trunc_func)
+                .values('period')
+                .annotate(count=Count('id'))
+                .order_by('period')
+        )
+
+    def get_status_distribution(self):
+        """
+        Generates a summary of applications grouped by their final status within the date range.
+        """
+        queryset = Application.objects.filter(
+            created_at__date__range=(self.start_date, self.end_date)
+        )
+        return {
+            item['status_display']: item['count']
+            for item in queryset
+                .annotate(status_display=models.F('status'))
+                .values('status_display')
+                .annotate(count=Count('id'))
+                .order_by('-count')
+        }
+
+    def get_top_countries(self, limit=10):
+        """
+        Generates a summary of the top N countries of residence for applicants.
+        """
+        queryset = Application.objects.filter(
+            created_at__date__range=(self.start_date, self.end_date),
+            application_type=Application.ApplicationType.NEW_ADMISSION
+        ).exclude(country_of_residence__isnull=True).exclude(country_of_residence__exact='')
+
+        return {
+            item['country_of_residence']: item['count']
+            for item in queryset
+                .values('country_of_residence')
+                .annotate(count=Count('id'))
+                .order_by('-count')[:limit] # Limit to top N for cleaner charts
+        }
+# end of apps/core/reports.py

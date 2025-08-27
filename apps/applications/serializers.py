@@ -1,10 +1,11 @@
 # start of apps/applications/serializers.py
 # apps/applications/serializers.py
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction # --- FIX: Import transaction for atomic operations
 from django.core.validators import FileExtensionValidator
 from rest_framework import serializers
 from drf_writable_nested.serializers import WritableNestedModelSerializer
-import openpyxl # Import for the exporter
+import copy # --- FIX: Import copy to duplicate nested data
 
 from .models import (
     Application, AcademicHistory, UniversityChoice,
@@ -52,18 +53,22 @@ class UniversityChoiceSerializer(serializers.ModelSerializer):
     program_id = serializers.PrimaryKeyRelatedField(queryset=Program.objects.all(), write_only=True, source='program')
     class Meta:
         model = UniversityChoice
-        # --- FIX: INCLUDE 'id' IN THE FIELDS ---
         fields = ['id', 'university', 'program', 'priority', 'university_id', 'program_id']
-        # Make 'id' optional for creation
         extra_kwargs = {'id': {'read_only': False, 'required': False}}
 
 
 class ApplicationDocumentSerializer(serializers.ModelSerializer):
-    # This includes the fix from Phase 16
-    file = serializers.FileField(use_url=True, read_only=True)
+    # This serializer is now used for both reading (displaying links)
+    # and writing (accepting new files). `drf-writable-nested` will handle it.
     class Meta:
         model = ApplicationDocument
-        exclude = ('application',)
+        fields = ['id', 'document_type', 'file']
+        extra_kwargs = {
+            'id': {'read_only': False, 'required': False},
+            # File is required when creating, but not when just viewing.
+            # The main serializer's 'required=False' on the field handles this.
+            'file': {'use_url': True} 
+        }
 
 class ApplicationLogSerializer(serializers.ModelSerializer):
     actor = UserSerializer(read_only=True)
@@ -99,6 +104,7 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
     applicant = UserSerializer(read_only=True)
     academic_histories = AcademicHistorySerializer(many=True, read_only=True)
     university_choices = UniversityChoiceSerializer(many=True, read_only=True)
+    # --- FIX: Use the corrected, writable serializer for display ---
     documents = ApplicationDocumentSerializer(many=True, read_only=True)
     logs = ApplicationLogSerializer(many=True, read_only=True)
     tasks = ApplicationTaskSerializer(many=True, read_only=True)
@@ -107,16 +113,16 @@ class ApplicationDetailSerializer(serializers.ModelSerializer):
         model = Application
         fields = '__all__'
 
+
 class ApplicationCreateSerializer(WritableNestedModelSerializer):
     applicant = serializers.HiddenField(default=serializers.CurrentUserDefault())
-    # --- NEW: Fields for institutions to create student users ---
     applicant_email = serializers.EmailField(write_only=True, required=False)
-
     application_type = serializers.ChoiceField(choices=Application.ApplicationType.choices)
     form_data = serializers.JSONField(required=False, initial=dict)
     academic_histories = AcademicHistorySerializer(many=True, required=False)
     university_choices = UniversityChoiceSerializer(many=True, required=False)
     documents = ApplicationDocumentSerializer(many=True, required=False)
+
 
     class Meta:
         model = Application
@@ -158,29 +164,41 @@ class ApplicationCreateSerializer(WritableNestedModelSerializer):
         request_user = self.context['request'].user
         is_institution = request_user.roles.filter(name='Recruitment Institution').exists()
 
+        # Pop nested data that needs to be duplicated for each new application
+        university_choices_data = validated_data.pop('university_choices', [])
+        academic_histories_data = validated_data.pop('academic_histories', [])
+        documents_data = validated_data.pop('documents', [])
+
+        # Handle institution-submitted applications to find or create the applicant
         if is_institution:
             applicant_email = validated_data.pop('applicant_email')
             applicant_full_name = validated_data.get('full_name')
-
             applicant, created = User.objects.get_or_create(
                 email__iexact=applicant_email,
                 defaults={'email': applicant_email.lower(), 'full_name': applicant_full_name}
             )
             if created:
-                try:
-                    applicant_role, _ = Role.objects.get_or_create(name='Applicant')
-                    applicant.roles.add(applicant_role)
-                except Role.DoesNotExist:
-                    pass 
+                applicant_role, _ = Role.objects.get_or_create(name='Applicant')
+                applicant.roles.add(applicant_role)
             
             validated_data['applicant'] = applicant
             validated_data['submitted_by_institution'] = request_user
         
-        application = super().create(validated_data)
-        ApplicationLog.objects.create(application=application, actor=request_user, action="Application submitted.")
-        for choice in application.university_choices.all():
-            ApplicationTask.objects.create(application=application, university=choice.university)
-        return application
+        created_applications = []
+        # Use a transaction to ensure all or no applications are created
+        with transaction.atomic():
+            for choice_data in university_choices_data:
+                app_data = copy.deepcopy(validated_data)
+                new_application = Application.objects.create(**app_data)
+                UniversityChoice.objects.create(application=new_application, **choice_data)
+                for history_data in academic_histories_data:
+                    AcademicHistory.objects.create(application=new_application, **history_data)
+                for doc_data in documents_data:
+                    ApplicationDocument.objects.create(application=new_application, **doc_data)
+                ApplicationLog.objects.create(application=new_application, actor=request_user, action="Application submitted.")
+                ApplicationTask.objects.create(application=new_application, university=choice_data['university'])
+                created_applications.append(new_application)
+        return created_applications[0] if created_applications else None
 
 
 # --- THIS IS THE SERIALIZER THAT WAS MISSING ---
@@ -188,15 +206,15 @@ class ApplicationUpdateSerializer(WritableNestedModelSerializer):
     """Serializer for updating/resubmitting an application."""
     academic_histories = AcademicHistorySerializer(many=True, required=False)
     university_choices = UniversityChoiceSerializer(many=True, required=False)
-    documents = ApplicationDocumentSerializer(many=True, required=False)
     form_data = serializers.JSONField(required=False)
+
 
     class Meta:
         model = Application
         fields = [
             'application_type', 'full_name', 'date_of_birth', 'country_of_residence',
             'father_name', 'grandfather_name', 'email', 'form_data',
-            'academic_histories', 'university_choices', 'documents'
+            'academic_histories', 'university_choices'
         ]
         read_only_fields = ('application_type',)
         
@@ -218,3 +236,4 @@ class ApplicationActionSerializer(serializers.Serializer):
 class TaskReassignmentSerializer(serializers.Serializer):
     user_id = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), label="New Expert User ID")
     
+# end of apps/applications/serializers.py

@@ -1,3 +1,4 @@
+# start of apps/support/views.py
 # apps/support/views.py
 from django.db import transaction
 from rest_framework import viewsets, permissions, status
@@ -7,7 +8,6 @@ from .serializers import (
     SupportTicketListSerializer, SupportTicketDetailSerializer,
     SupportTicketCreateSerializer, TicketMessageSerializer
 )
-# from apps.core.utils import create_notification  # Assuming a helper function for notifications
 
 class SupportTicketViewSet(viewsets.ModelViewSet):
     """ViewSet for creating and viewing support tickets."""
@@ -25,41 +25,41 @@ class SupportTicketViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Users can only see their own tickets.
-        Staff with the 'SupportStaff' role can see all tickets.
+        Staff with the 'SupportStaff' role (or is_staff) can see all tickets.
         """
         user = self.request.user
         base_queryset = SupportTicket.objects.prefetch_related('messages__sender', 'user')
         
-        # This assumes a role named 'SupportStaff' exists for your support team.
+        # Check if the user is part of a dedicated support role or is a general staff member.
         if user.is_staff or user.roles.filter(name='SupportStaff').exists():
             return base_queryset
         return base_queryset.filter(user=user)
 
     def perform_create(self, serializer):
-        """Handle the creation of the ticket and its initial message."""
+        """Handle the creation of the ticket and its initial message atomically."""
         user = self.request.user
+        # Pop the non-model fields from the validated data before saving the ticket.
         message_text = serializer.validated_data.pop('message')
         attachment_file = serializer.validated_data.pop('attachment', None)
         
         with transaction.atomic():
+            # Save the SupportTicket instance, linking it to the current user.
             ticket = serializer.save(user=user)
+            # Create the first message for this new ticket.
             TicketMessage.objects.create(
-                ticket=ticket, sender=user, message=message_text, attachment=attachment_file
+                ticket=ticket, 
+                sender=user, 
+                message=message_text, 
+                attachment=attachment_file
             )
-            # Example of creating a notification for staff:
-            # create_notification(
-            #     user_group='SupportStaff',
-            #     title=f"New Ticket: {ticket.ticket_id}",
-            #     message=f"A new support ticket has been opened by {user.email}.",
-            #     link=f"/support/tickets/{ticket.ticket_id}"
-            # )
 
     def create(self, request, *args, **kwargs):
-        """Override create to return the detailed view of the new ticket."""
+        """Override create to return the detailed view of the new ticket for a better UX."""
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         
+        # After creation, serialize the instance with the detailed serializer.
         detail_serializer = SupportTicketDetailSerializer(serializer.instance)
         headers = self.get_success_headers(detail_serializer.data)
         return Response(detail_serializer.data, status=status.HTTP_201_CREATED, headers=headers)
@@ -71,7 +71,7 @@ class TicketMessageViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """Filter messages to only those belonging to the specified ticket."""
+        """Filter messages to only those belonging to the specified ticket in the URL."""
         ticket_id = self.kwargs.get('ticket_ticket_id')
         return TicketMessage.objects.filter(ticket__ticket_id=ticket_id)
 
@@ -93,14 +93,15 @@ class TicketMessageViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             message = serializer.save(sender=user, ticket=ticket)
             
-            # Update ticket status and timestamp
+            # Update ticket timestamp to bring it to the top of lists.
             ticket.updated_at = message.timestamp
+            
+            # Update ticket status based on who replied.
             if is_staff:
+                # If staff replies, the ball is in the user's court.
                 ticket.status = SupportTicket.StatusChoices.AWAITING_REPLY
-                # Notify the user who created the ticket
-                # create_notification(user=ticket.user, ...)
             else:
+                # If the user replies, the ticket is now 'Open' for staff to see.
                 ticket.status = SupportTicket.StatusChoices.OPEN
-                # Notify support staff
-                # create_notification(user_group='SupportStaff', ...)
             ticket.save()
+# end of apps/support/views.py
