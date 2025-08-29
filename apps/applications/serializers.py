@@ -207,6 +207,7 @@ class ApplicationUpdateSerializer(WritableNestedModelSerializer):
     academic_histories = AcademicHistorySerializer(many=True, required=False)
     university_choices = UniversityChoiceSerializer(many=True, required=False)
     form_data = serializers.JSONField(required=False)
+    documents = ApplicationDocumentSerializer(many=True, required=False)
 
 
     class Meta:
@@ -214,11 +215,20 @@ class ApplicationUpdateSerializer(WritableNestedModelSerializer):
         fields = [
             'application_type', 'full_name', 'date_of_birth', 'country_of_residence',
             'father_name', 'grandfather_name', 'email', 'form_data',
-            'academic_histories', 'university_choices'
+            'academic_histories', 'university_choices',
+            'documents' 
         ]
         read_only_fields = ('application_type',)
         
     validate = ApplicationCreateSerializer.validate
+
+    # --- FIX START: Override update to prevent deleting old documents ---
+    def update(self, instance, validated_data):
+        # We pop 'documents' so drf-writable-nested does not process it.
+        # The view will handle creating new documents manually.
+        validated_data.pop('documents', None)
+        return super().update(instance, validated_data)
+    # --- FIX END ---
 
 
 # --- Action-Specific Serializers ---

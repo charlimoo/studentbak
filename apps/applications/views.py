@@ -10,7 +10,7 @@ from rest_framework import filters as drf_filters
 from django_filters.rest_framework import DjangoFilterBackend
 import logging
 
-from .models import Application, ApplicationTask, ApplicationLog, InternalNote
+from .models import Application, ApplicationTask, ApplicationLog, InternalNote, ApplicationDocument
 from .serializers import (
     ApplicationCreateSerializer, ApplicationListSerializer, ApplicationDetailSerializer,
     ApplicationUpdateSerializer, ApplicationActionSerializer, TaskReassignmentSerializer,
@@ -75,22 +75,25 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
             )
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+        # --- FIX START: Manually handle document creation ---
+        # The serializer validated the document data, now we extract it.
+        validated_documents = serializer.validated_data.get('documents', [])
+
         with transaction.atomic():
+            # This calls our custom serializer.update() which pops 'documents'
+            # before calling super(), so only non-document fields are updated.
             self.perform_update(serializer)
             application = serializer.instance
 
-            doc_index = 0
-            while f'documents[{doc_index}][file]' in request.FILES:
-                doc_type = request.data.get(f'documents[{doc_index}][document_type]')
-                doc_file = request.FILES.get(f'documents[{doc_index}][file]')
-                
-                if doc_type and doc_file:
+            # Manually create only the new documents from the validated data.
+            # This implements "append-only" behavior.
+            for doc_data in validated_documents:
+                if doc_data.get('file') and doc_data.get('document_type'):
                     ApplicationDocument.objects.create(
                         application=application,
-                        document_type=doc_type,
-                        file=doc_file
+                        document_type=doc_data['document_type'],
+                        file=doc_data['file']
                     )
-                doc_index += 1
             
             application.status = Application.StatusChoices.PENDING_REVIEW
             application.save(update_fields=['status'])
@@ -105,8 +108,11 @@ class ApplicationViewSet(mixins.CreateModelMixin, mixins.RetrieveModelMixin,
                 actor=request.user, 
                 action="Application resubmitted after correction."
             )
-            
+        
+        # Refresh instance from DB to get the complete, updated list of documents
+        instance.refresh_from_db()
         return Response(ApplicationDetailSerializer(instance).data)
+        # --- FIX END ---
 
     @action(detail=False, methods=['get'], url_path='my')
     def my_applications(self, request):

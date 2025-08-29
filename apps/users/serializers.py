@@ -18,12 +18,22 @@ class RoleSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'description']
 
 class UserSerializer(serializers.ModelSerializer):
+    """
+    Comprehensive serializer for the authenticated user ('/me' endpoint).
+    """
     roles = RoleSerializer(many=True, read_only=True)
     universities = UniversitySerializer(many=True, read_only=True)
+    # FIX: Use StringRelatedField to include the organization unit's name.
+    organization_unit = serializers.StringRelatedField(read_only=True)
     
     class Meta:
         model = User
-        fields = ['id', 'email', 'full_name', 'roles', 'universities', 'profile_picture', 'is_active', 'is_staff']
+        # FIX: Added 'phone_number' and 'organization_unit' to the fields.
+        fields = [
+            'id', 'email', 'full_name', 'phone_number', 
+            'roles', 'universities', 'organization_unit', 
+            'profile_picture', 'is_active', 'is_staff'
+        ]
 
 # --- Action-Specific Serializers ---
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -83,6 +93,7 @@ class InstitutionRegistrationSerializer(serializers.ModelSerializer):
 class UserProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
+        # NOTE: Email is not editable here by design.
         fields = ['full_name', 'phone_number', 'profile_picture']
 
 class ChangePasswordSerializer(serializers.Serializer):
@@ -146,7 +157,6 @@ class InstitutionStaffSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        # --- FIX: ADD 'password' TO THE LIST OF FIELDS TO BE PROCESSED ---
         fields = ['id', 'email', 'full_name', 'password', 'roles', 'universities', 'is_active']
         read_only_fields = ['id', 'roles', 'universities', 'is_active']
 

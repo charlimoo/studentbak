@@ -117,7 +117,8 @@ class DashboardStatsView(APIView):
             applicant_apps = Application.objects.filter(applicant=user)
             stats['my_applications'] = applicant_apps.aggregate(
                 total=Count('id'),
-                pending=Count('id', filter=Q(status__in=['PENDING_REVIEW', 'PENDING_CORRECTION'])),
+                pending=Count('id', filter=Q(status='PENDING_REVIEW')),
+                requires_action=Count('id', filter=Q(status='PENDING_CORRECTION')),
                 approved=Count('id', filter=Q(status='APPROVED')),
                 rejected=Count('id', filter=Q(status='REJECTED')),
             )

@@ -44,6 +44,7 @@ class IsRelatedToApplication(BasePermission):
     1. The applicant who owns the application.
     2. A University Expert whose university is part of the application's choices.
     3. The Head of Organization.
+    4. A Recruitment Institution whose university is part of the application's choices.
     """
     message = "You are not authorized to view this application."
 
@@ -60,12 +61,14 @@ class IsRelatedToApplication(BasePermission):
         if user.roles.filter(name='HeadOfOrganization').exists():
             return True
 
-        # Rule 2: University Expert
-        if user.roles.filter(name='UniversityExpert').exists():
-            expert_universities_ids = user.universities.all().values_list('id', flat=True)
+        # --- FIX: Rule 2 & 4 combined ---
+        # Allow access if the user is an expert or an institution affiliated with the application's universities.
+        user_roles = user.roles.values_list('name', flat=True)
+        if 'UniversityExpert' in user_roles or 'Recruitment Institution' in user_roles:
+            user_universities_ids = user.universities.all().values_list('id', flat=True)
             application_universities_ids = obj.university_choices.all().values_list('university_id', flat=True)
             # Check for any intersection between the two sets of university IDs
-            if set(expert_universities_ids).intersection(set(application_universities_ids)):
+            if set(user_universities_ids).intersection(set(application_universities_ids)):
                 return True
         
         return False
